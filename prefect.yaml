@@ -1,0 +1,21 @@
+name: entry-remove-project
+prefect-version: ">=2.16.0"
+
+# This project uses the "prefect deploy" workflow (recommended).
+# After you set up a work pool and worker, run:
+#   prefect deploy --name 'prod' --pool '<YOUR_WORK_POOL>' --queue 'default'
+# …or edit the deployment block below (work_pool) and run `prefect deploy`.
+
+deployments:
+- name: prod
+  description: "Run entry_remove.py against a manifest with an entries TSV"
+  entrypoint: flows/entry_remove_flow.py:run_entry_remove
+  parameters:
+    manifest_path: "data/manifest.xlsx"
+    template_path: "data/template.xlsx"
+    entries_path: "data/entries.tsv"
+  work_pool:
+    name: CHANGE_ME_WORK_POOL   # e.g., "process-pool" or "docker-pool"
+    work_queue_name: default
+    job_variables: {}
+  schedules: []
