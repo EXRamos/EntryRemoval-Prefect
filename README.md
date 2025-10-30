@@ -1,129 +1,75 @@
-# Prefect Cloud deployment for `entry_remove.py`
+# Prefect Cloud deployment for `entry_remove.py` (S3-first with local fallback)
 
-This scaffold wraps your existing `entry_remove.py` CLI as a Prefect 2.x flow so you can schedule or trigger it from Prefect Cloud.
+Workspace:
+- Account: `90cb3bf5-1af1-44fa-8a6d-a1f111368e02`
+- Workspace: `468a881e-3696-47aa-ae2e-d6942a047666`
 
-## Repo layout
-
-```
-prefect_entry_remove_project/
-├── entry_remove.py              # <- place your script here (copied from your upload)
-├── flows/
-│   └── entry_remove_flow.py     # Prefect flow wrapper
-├── prefect.yaml                 # Project + deployment configuration
-├── requirements.txt
-└── .prefectignore
-```
-
-> **Note**  
-> The flow calls your script via `python entry_remove.py -f ... -t ... -e ...` and does not change its behavior.
-
-## Quick start (local worker + Process work pool)
-
-This is the simplest path—no Docker image required.
-
-1. **Install dependencies**
-   ```bash
-   python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-2. **Log in to Prefect Cloud**
-   ```bash
-   prefect cloud login
-   ```
-   - Choose your _workspace_ when prompted (or set with `prefect config set PREFECT_API_URL=...`).
-
-3. **Create a work pool of type _Process_** (one time)
-   ```bash
-   prefect work-pool create process-pool --type process
-   ```
-
-4. **Start a worker attached to that pool** (keep this running)
-   ```bash
-   prefect worker start --pool process-pool
-   ```
-
-5. **Deploy the flow**
-   Edit `prefect.yaml` and set:
-   ```yaml
-   work_pool:
-     name: process-pool
-     work_queue_name: default
-   ```
-   Then run:
-   ```bash
-   prefect deploy --name prod
-   ```
-
-6. **Provide inputs (files)**
-   Make sure the following exist relative to the project root _on the worker machine_:
-   ```
-   data/manifest.xlsx
-   data/template.xlsx
-   data/entries.tsv
-   ```
-   You can change these paths in your deployment parameters.
-
-7. **Run it**
-   - From UI: open your deployment `entry-remove-project/prod` and click **Run**.
-   - CLI:
-     ```bash
-     prefect deployment run 'entry-remove-project/prod'        -p manifest_path=data/manifest.xlsx        -p template_path=data/template.xlsx        -p entries_path=data/entries.tsv
-     ```
-
-## Alternative: Docker work pool
-
-If you need an isolated environment with pinned libraries:
-
-1. Create a Docker work pool:
-   ```bash
-   prefect work-pool create docker-pool --type docker
-   ```
-
-2. Build an image (example):
-   ```Dockerfile
-   FROM prefecthq/prefect:2-python3.11
-   WORKDIR /app
-   COPY requirements.txt .
-   RUN pip install --no-cache-dir -r requirements.txt
-   COPY . .
-   ```
-   Build & push your image to a registry you can pull from your workers.
-
-3. In `prefect.yaml` set:
-   ```yaml
-   work_pool:
-     name: docker-pool
-     work_queue_name: default
-     job_variables:
-       image: ghcr.io/YOUR_ORG/entry-remove:latest
-   ```
-
-4. Start a Docker worker and `prefect deploy`.
-
-## Notes about your script flags
-
-The wrapper expects your script to accept:
-- `-f / --file` for the input manifest
-- `-t / --template` for the template Excel (must include a `Dictionary` sheet)
-- `-e / --entry` for the TSV of node_ids to remove
-
-If you later remove the template dependency or add new flags, just update `flows/entry_remove_flow.py` accordingly.
-
-## Observability
-
-The flow publishes a small **Markdown artifact** with the return code and the last part of stdout/stderr to the Prefect UI. Your script also writes an `*_log.txt` and a cleaned workbook (`*_EntRemoveYYYYMMDD.xlsx`) in the project directory.
-
-## Triggering with different parameters
-
-Update deployment parameters in `prefect.yaml` or pass them at runtime:
-
+## Login & target the workspace
 ```bash
-prefect deployment run 'entry-remove-project/prod'   -p manifest_path=/absolute/path/manifest.xlsx   -p template_path=/absolute/path/template.xlsx   -p entries_path=/absolute/path/entries.tsv
+prefect cloud login
+prefect config set PREFECT_API_URL="https://api.prefect.cloud/api/accounts/90cb3bf5-1af1-44fa-8a6d-a1f111368e02/workspaces/468a881e-3696-47aa-ae2e-d6942a047666"
 ```
 
-## Common gotchas
+## Prepare the repo
+```bash
+git clone https://github.com/EXRamos/EntryRemoval-Prefect
+cd EntryRemoval-Prefect
+# add or update: flows/entry_remove_flow.py, prefect.yaml, requirements.txt, .prefectignore
+```
 
-- The **Process** worker runs jobs on the same machine—make sure the file paths you use are **reachable on the worker**.
-- If you see `ModuleNotFoundError` for `openpyxl` or `XlsxWriter`, check that your worker environment has installed `requirements.txt`.
-- If you need to read/write large Excel files, consider increasing worker memory or moving to a Docker work pool.
+## Install & create a work pool
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+prefect work-pool create process-pool --type process   # or: docker-pool --type docker
+prefect worker start --pool process-pool
+```
+
+## Git is public — no token needed
+If you later make the repo private, set `GIT_AUTH_TOKEN` on the worker or create a Prefect GitHub block.
+
+## AWS creds for S3
+Provide one of:
+- IAM Role on the worker
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION=us-east-1`
+- `~/.aws/credentials`
+
+## Configure `prefect.yaml`
+- **Defaults** point to S3. Change `YOUR-BUCKET` and paths.
+- Set your work pool:
+```yaml
+work_pool:
+  name: process-pool        # or docker-pool
+  work_queue_name: default
+```
+
+## Deploy
+```bash
+prefect deploy --name prod
+```
+
+## Run — S3-first (recommended)
+```bash
+prefect deployment run 'entry-remove-project/prod' \
+  -p manifest_path="s3://YOUR-BUCKET/path/to/manifest.xlsx" \
+  -p template_path="s3://YOUR-BUCKET/path/to/template.xlsx" \
+  -p entries_path="s3://YOUR-BUCKET/path/to/entries.tsv" \
+  -p s3_output_prefix="s3://YOUR-BUCKET/outputs/entry-remove/"
+```
+
+### Local fallback when needed
+```bash
+prefect deployment run 'entry-remove-project/prod' \
+  -p manifest_path="data/manifest.xlsx" \
+  -p template_path="data/template.xlsx" \
+  -p entries_path="data/entries.tsv" \
+  -p s3_output_prefix="s3://YOUR-BUCKET/outputs/entry-remove/"
+```
+
+## Behavior recap
+- Any `s3://...` input is auto-downloaded to a temp dir and used by your CLI.
+- The flow invokes your script unchanged:
+  `python entry_remove.py -f <manifest> -t <template> -e <entries>`
+- All outputs matching `*_EntRemove*.xlsx` are uploaded to the `s3_output_prefix` you provide.
+- A Markdown artifact with return code + stdout/stderr tail and uploaded file list appears in the Prefect UI.
