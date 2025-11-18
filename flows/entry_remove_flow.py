@@ -122,27 +122,38 @@ def publish_run_summary(result: dict, uploaded: Optional[list] = None):
     create_markdown_artifact(key="entry-remove-summary", markdown="\n".join(md))
 
 
-@flow(name="entry-remove-flow")
+@flow
 def run_entry_remove(
-    # Local-first defaults for convenient local testing
+    s3_bucket: str = "ccdi-validation",
+    manifest_key: str = "",
+    template_key: str = "",
+    entries_key: str = "",
+    output_prefix: str = "outputs/entry-remove/",
+    outputs_glob: str = "*_EntRemove*.xlsx",
     manifest_path: str = "data/manifest.xlsx",
     template_path: str = "data/template.xlsx",
     entries_path: str = "data/entries.tsv",
-    # You can still push outputs to S3 when desired
-    outputs_glob: str = "*_EntRemove*.xlsx",
-    s3_output_prefix: Optional[str] = None,
-    python_exe: Optional[str] = None,
+    s3_output_prefix: str | None = None,
+    python_exe: str | None = None,
 ):
-    """
-    Prefect flow that invokes your entry_remove.py CLI.
-    Local-first defaults; S3 supported via s3:// parameters and s3_output_prefix.
-    """
+    # If keys are provided, construct S3 URLs using the bucket
+    if manifest_key:
+        manifest_path = f"s3://{s3_bucket}/{manifest_key}"
+    if template_key:
+        template_path = f"s3://{s3_bucket}/{template_key}"
+    if entries_key:
+        entries_path = f"s3://{s3_bucket}/{entries_key}"
+
+    # If no explicit s3_output_prefix, build from bucket + output_prefix
+    if s3_output_prefix is None and output_prefix:
+        s3_output_prefix = f"s3://{s3_bucket}/{output_prefix}"
+
+    # existing logic:
     m, t, e = stage_inputs(manifest_path, template_path, entries_path)
     result = run_entry_remove_script(m, t, e, python_exe)
     uploaded = ship_outputs_to_s3(outputs_glob, s3_output_prefix)
     publish_run_summary(result, uploaded)
     return result
-
 
 # Optional local dev server aligned with the training doc's 'serve' guidance. :contentReference[oaicite:1]{index=1}
 def serve_locally():
