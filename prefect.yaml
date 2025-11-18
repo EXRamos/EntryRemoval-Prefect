@@ -1,24 +1,38 @@
 name: entry-remove-project
 prefect-version: ">=2.16.0"
 
+# Local execution + Cloud "test" workspace via a local worker.
+# - Runs flows/entry_remove_flow.py:run_entry_remove
+# - Local data/* defaults; S3 supported via runtime params
+# - No git pull step (you’re testing from your local checkout)
+
+# Clone the EntryRemoval-Prefect repo on each run so workers get the latest flows & code.
 pull:
-- prefect.projects.steps.git_clone:
-    repository: https://github.com/EXRamos/EntryRemoval-Prefect
-    branch: main
-    key: null
+  - prefect.projects.steps.git_clone:
+      repository: https://github.com/EXRamos/EntryRemoval-Prefect
+      branch: main
 
 deployments:
-- name: prod
-  description: "Run entry_remove.py against S3 or local inputs; upload outputs to user-specified S3 prefix"
+- name: ccdi-entry-remove-v1
+  version: null
+  tags: ["ENTRY REMOVE"]
+  description: "Entry remove flow for CCDI workspace using ccdi-validation S3 bucket"
   entrypoint: flows/entry_remove_flow.py:run_entry_remove
+  schedule: null
+  
   parameters:
-    manifest_path: "s3://YOUR-BUCKET/path/to/manifest.xlsx"
-    template_path: "s3://YOUR-BUCKET/path/to/template.xlsx"
-    entries_path: "s3://YOUR-BUCKET/path/to/entries.tsv"
+    s3_bucket: "ccdi-validation"
+    manifest_key: "user/path/to/manifest.xlsx"
+    template_key: "user/path/to/template.xlsx"
+    entries_key: "user/path/to/entries.tsv"
     outputs_glob: "*_EntRemove*.xlsx"
-    s3_output_prefix: "s3://YOUR-BUCKET/outputs/entry-remove/"
+    output_prefix: "outputs/entry-remove/"
+    manifest_path: "data/manifest.xlsx"
+    template_path: "data/template.xlsx"
+    entries_path: "data/entries.tsv"
+    s3_output_prefix: null
   work_pool:
-    name: CHANGE_ME_WORK_POOL
+    name: ccdi-curation-8gb-prefect-3.2.14-python3.9
     work_queue_name: default
     job_variables: {}
   schedules: []

@@ -1,3 +1,16 @@
+# Entry Removal — Prefect (Local-first) Project
+
+This project is aligned to the training guide and supports local execution while connected to Prefect Cloud (test workspace). You can run locally for development and then deploy to Cloud. :contentReference[oaicite:2]{index=2}
+
+## 1) Create & activate a virtualenv, install Prefect
+```bash
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+
+
+
+
 # Prefect Cloud deployment for `entry_remove.py` (S3-first with local fallback)
 
 Workspace:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -12,7 +11,7 @@ from prefect.artifacts import create_markdown_artifact
 
 # Optional S3 support
 try:
-    import boto3
+    import boto3  # type: ignore
 except Exception:  # pragma: no cover
     boto3 = None
 
@@ -29,49 +28,31 @@ def _split_s3_url(url: str) -> Tuple[str, str]:
 
 
 @task
-def stage_inputs(manifest_path: str, template_path: str, entries_path: str) -> Tuple[str, str, str, Optional[str]]:
+def stage_inputs(manifest_path: str, template_path: str, entries_path: str) -> Tuple[str, str, str]:
     """
-    Download inputs from S3 to a temp dir if paths are s3://...,
-    else validate local paths. Returns resolved paths and the temp dir (if used).
+    Local-first defaults under ./data; if any path is s3://..., download to ./data at runtime.
     """
     logger = get_run_logger()
-    tmpdir = None
-    s3_used = any(_is_s3_path(p) for p in (manifest_path, template_path, entries_path))
+    data_dir = Path("data")
+    data_dir.mkdir(exist_ok=True)
 
-    if s3_used:
-        if boto3 is None:
-            raise RuntimeError("boto3 is required for S3 paths; install boto3 and configure AWS creds.")
-        import boto3 as _boto3
-        s3 = _boto3.client("s3")
-        import tempfile as _tempfile
-        tmpdir = _tempfile.mkdtemp(prefix="entry-remove-")
-
-        def dl(src: str) -> str:
-            if _is_s3_path(src):
-                b, k = _split_s3_url(src)
-                dst = str(Path(tmpdir) / Path(k).name)
-                logger.info("Downloading %s -> %s", src, dst)
-                s3.download_file(b, k, dst)
-                return dst
-            else:
-                p = Path(src).expanduser().resolve()
-                if not p.exists():
-                    raise FileNotFoundError(f"Local input not found: {p}")
-                return str(p)
-
-        m = dl(manifest_path)
-        t = dl(template_path)
-        e = dl(entries_path)
-        return m, t, e, tmpdir
-
-    # Local-only
-    def check(p: str) -> str:
-        path = Path(p).expanduser().resolve()
+    def resolve(p: str) -> str:
+        if _is_s3_path(p):
+            if boto3 is None:
+                raise RuntimeError("boto3 is required for S3 paths; install boto3 and configure AWS creds.")
+            b, k = _split_s3_url(p)
+            dst = data_dir / Path(k).name
+            logger.info("Downloading %s -> %s", p, dst)
+            import boto3 as _boto3  # local import
+            _boto3.client("s3").download_file(b, k, str(dst))
+            return str(dst.resolve())
+        # local path
+        path = Path(p).expanduser()
         if not path.exists():
             raise FileNotFoundError(f"Required file not found: {path}")
-        return str(path)
+        return str(path.resolve())
 
-    return check(manifest_path), check(template_path), check(entries_path), tmpdir
+    return resolve(manifest_path), resolve(template_path), resolve(entries_path)
 
 
 @task
@@ -81,7 +62,7 @@ def run_entry_remove_script(manifest: str, template: str, entries: str, python_e
     """
     logger = get_run_logger()
     python = python_exe or sys.executable
-    cmd = f'{python} entry_remove.py -f "{manifest}" -t "{template}" -e "{entries}"'
+    cmd = f'{shlex.quote(python)} entry_remove.py -f {shlex.quote(manifest)} -t {shlex.quote(template)} -e {shlex.quote(entries)}'
     logger.info("Running command: %s", cmd)
 
     proc = subprocess.run(
@@ -89,7 +70,7 @@ def run_entry_remove_script(manifest: str, template: str, entries: str, python_e
         shell=True,
         capture_output=True,
         text=True,
-        cwd=str(Path(__file__).resolve().parents[1])  # repo root where entry_remove.py should live
+        cwd=str(Path(__file__).resolve().parents[1])  # repo/project root where entry_remove.py should live
     )
     logger.info("Return code: %s", proc.returncode)
     if proc.stdout:
@@ -101,7 +82,7 @@ def run_entry_remove_script(manifest: str, template: str, entries: str, python_e
 
 
 @task
-def ship_outputs_to_s3(outputs_glob: str, s3_output_prefix: Optional[str]):
+def ship_outputs_to_s3(outputs_glob: str, s3_output_prefix: Optional[str] = None):
     """
     Upload files matching outputs_glob to s3_output_prefix if provided.
     s3_output_prefix like: s3://my-bucket/path/prefix/
@@ -114,8 +95,8 @@ def ship_outputs_to_s3(outputs_glob: str, s3_output_prefix: Optional[str]):
     from pathlib import Path
     import boto3 as _boto3
 
+    bucket, prefix = _split_s3_url(s3_output_prefix.rstrip('/') + '/')
     s3 = _boto3.client("s3")
-    bucket, prefix = _split_s3_url(s3_output_prefix.rstrip("/") + "/")
     uploaded = []
     for p in Path(".").glob(outputs_glob):
         if p.is_file():
@@ -141,28 +122,45 @@ def publish_run_summary(result: dict, uploaded: Optional[list] = None):
     create_markdown_artifact(key="entry-remove-summary", markdown="\n".join(md))
 
 
-from prefect import flow
-
 @flow(name="entry-remove-flow")
 def run_entry_remove(
-    manifest_path: str = "s3://YOUR-BUCKET/path/to/manifest.xlsx",
-    template_path: str = "s3://YOUR-BUCKET/path/to/template.xlsx",
-    entries_path: str = "s3://YOUR-BUCKET/path/to/entries.tsv",
+    # Local-first defaults for convenient local testing
+    manifest_path: str = "data/manifest.xlsx",
+    template_path: str = "data/template.xlsx",
+    entries_path: str = "data/entries.tsv",
+    # You can still push outputs to S3 when desired
     outputs_glob: str = "*_EntRemove*.xlsx",
-    s3_output_prefix: Optional[str] = "s3://YOUR-BUCKET/outputs/entry-remove/",
+    s3_output_prefix: Optional[str] = None,
     python_exe: Optional[str] = None,
 ):
     """
     Prefect flow that invokes your entry_remove.py CLI.
-    - S3-first defaults for inputs and output upload prefix
-    - Local fallback supported by passing non-s3 paths
+    Local-first defaults; S3 supported via s3:// parameters and s3_output_prefix.
     """
-    m, t, e, _tmpdir = stage_inputs(manifest_path, template_path, entries_path)
+    m, t, e = stage_inputs(manifest_path, template_path, entries_path)
     result = run_entry_remove_script(m, t, e, python_exe)
     uploaded = ship_outputs_to_s3(outputs_glob, s3_output_prefix)
     publish_run_summary(result, uploaded)
     return result
 
 
+# Optional local dev server aligned with the training doc's 'serve' guidance. :contentReference[oaicite:1]{index=1}
+def serve_locally():
+    run_entry_remove.serve(
+        name="entry-remove-local",
+        tags=["local", "dev"],
+        parameters={
+            "manifest_path": "data/manifest.xlsx",
+            "template_path": "data/template.xlsx",
+            "entries_path": "data/entries.tsv",
+            "outputs_glob": "*_EntRemove*.xlsx",
+            "s3_output_prefix": None,
+        },
+    )
+
+
 if __name__ == "__main__":
+    # Default behavior: run the flow locally (no worker required)
     run_entry_remove()
+    # For an interactive local deployment server, uncomment:
+    # serve_locally()
